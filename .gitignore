@@ -3,6 +3,7 @@ projectl/
 target/
 *.class
 *.log
+*.swp
 
 # sbt specific
 .cache
