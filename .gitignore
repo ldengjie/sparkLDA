@@ -1,11 +1,12 @@
 lib/
+data/
 projectl/
 target/
 metastore_db/
 *.class
 *.log
 .*.swp
-derby
+derby*
 
 # sbt specific
 .cache

@@ -1,4 +1,4 @@
-package com.sugon.spark.TopicLDA
+package com.sugon.spark.LDA
 
 import java.io.{PrintWriter, File, StringReader}
 import java.text.BreakIterator
@@ -11,8 +11,13 @@ import org.apache.spark.{SparkContext, SparkConf}
 import org.apache.spark.mllib.clustering._
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
-import org.elasticsearch.spark._
+//import org.elasticsearch.spark._
 import scala.io.Source
+
+import org.apache.poi.POIXMLDocument;
+import org.apache.poi.POITextExtractor; 
+import org.apache.poi.xwpf.extractor.XWPFWordExtractor; 
+import org.apache.poi.xwpf.usermodel.XWPFDocument; 
 
 //单例对象，存放工具函数或常量，不能提供构造器参数
 object LDATest {
@@ -23,7 +28,7 @@ object LDATest {
 
   //样例类,自动具备 apply,unapply,toString,equals,hashCode,copy 方法
   private case class Params(
-    input: Seq[String] = Seq("D:\\cjsldaresult"),
+    input: Seq[String] = Seq("/root/workSpark/sparkLDA/data/ldaresult.txt"),
     k: Int = 50,                         
     maxIterations: Int = 20,             
     docConcentration: Double = -1,      
@@ -32,18 +37,22 @@ object LDATest {
     stopwordFile: String = "",        
     algorithm: String = "em",          
     checkpointDir: Option[String] = None,
-    checkpointInterval: Int = 50,     
-    esoutput: String = "model/ldaresult6",
-    esnodes: String = "192.168.59.128",
-    esport: String = "9200") extends AbstractParams[Params]
+    checkpointInterval: Int = 50
+    //,     
+    //esoutput: String = "model/ldaresult6",
+    //esnodes: String = "192.168.59.128",
+    //esport: String = "9200"
+  ) extends AbstractParams[Params]
 
   def main(args: Array[String]) {
+
     //待分析文档
-    val inputdic = "D:\\8-project\\SogouC.reduced\\Reduced\\C000008"
+    val inputdic = "/root/workSpark/sparkLDA/data/SogouC.reduced/Reduced/C000008"
+
     //遍历所有文档，合成一个总的文档,读取文档到变量 ldacontent:一篇文章一行;contentMap:一篇文章一个Map[,String]
     walk(new File(inputdic))
     //把合并后的文档落地,由 Params.input 读取
-    val ldawriter = new PrintWriter(new File("D:\\testldapre\\ldaresult.txt"),"UTF-8")
+    val ldawriter = new PrintWriter(new File("/root/workSpark/sparkLDA/data/ldaresult.txt"),"UTF-8")
     ldawriter.write(ldacontent)
     ldawriter.close()
     //运行LDA
@@ -55,8 +64,8 @@ object LDATest {
     val conf = new SparkConf().setAppName(s"LDAExample with $params").setMaster("local[2]")
     conf.set("es.index.auto.create", "true")
     conf.set("pushdown","true")
-    conf.set("es.nodes" , params.esnodes)
-    conf.set("es.port", params.esport)
+    //conf.set("es.nodes" , params.esnodes)
+    //conf.set("es.port", params.esport)
 
     val sc = new SparkContext(conf)
     Logger.getRootLogger.setLevel(Level.WARN)
@@ -121,6 +130,7 @@ object LDATest {
           }
           topicMap += (topicMapKey->topicMapValue.substring(0,topicMapValue.length-1))
         }
+        topicMap.foreach(println)
 
         if (ldaModel.isInstanceOf[DistributedLDAModel]) {
           val distLDAModel = ldaModel.asInstanceOf[DistributedLDAModel]
@@ -136,6 +146,7 @@ object LDATest {
           }
           println()
         }
+        //println(outputlist)
 
         sc.stop()
   }
@@ -144,19 +155,34 @@ object LDATest {
   private def walk(file:File) {
 
     if(file.isFile()) {
-      val fileindic = file.getName.substring(0,file.getName.length-4)
-      var newfile = fileindic + ", "
+
+      var newfile = ""
       var contentfile = ""
-      for (line <- Source.fromFile(file.getPath).getLines){
+
+      //读取.txt文档名字
+      val fileindic = file.getName.substring(0,file.getName.length-4)
+      newfile = fileindic + ", "
+      //读取.txt文档
+      for (line <- Source.fromFile(file.getPath,"GBK").getLines){
         newfile += line
         contentfile += line + "\n"
       }
+
+      //读取.docx文档名字
+      //val fileindic = file.getName.substring(0,file.getName.length-5)
+      //newfile = fileindic + ", "
+      //读取.docx文档
+      //contentfile = new XWPFWordExtractor(POIXMLDocument.openPackage("/root/workSpark/sparkLDA/data/87.docx")).getText.replaceAll("\n"," ")
+      //newfile+=contentfile
+      
       //一篇文章一行
       ldacontent += newfile + "\n"
       //一篇文章一个Map[,String]
       contentMap += (fileindic.toLong -> contentfile)
-    } else
+    } else {
+      //println(file.getName)
       file.listFiles().foreach(walk)
+    }
 
   }
 
@@ -210,9 +236,9 @@ object LDATest {
                 wordCounts.sortBy(_._2, ascending = false).take(vocabSize)
               }
               val tmpSortedWC = tmpSortedWCpre.filter(_._2>5)
-              tmpSortedWC.foreach(x =>
-                  println(x._1,x._2)
-                  )
+              //tmpSortedWC.foreach(x =>
+                  //println(x._1,x._2)
+                  //)
               (tmpSortedWC.map(_._1).zipWithIndex.toMap, tmpSortedWC.map(_._2).sum)
             }
 
