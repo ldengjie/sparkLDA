@@ -12,20 +12,24 @@ import org.apache.spark.mllib.clustering._
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
 import scala.io.Source
-import org.apache.poi.POIXMLDocument;
-import org.apache.poi.POITextExtractor; 
-import org.apache.poi.xwpf.extractor.XWPFWordExtractor; 
-import org.apache.poi.xwpf.usermodel.XWPFDocument; 
+//.docx .xlsx
+import org.apache.poi.POIXMLDocument
+import org.apache.poi.xwpf.extractor.XWPFWordExtractor
+import org.apache.poi.xssf.extractor.XSSFExcelExtractor
+import org.apache.poi.xslf.extractor.XSLFPowerPointExtractor
+//.pdf
+import org.apache.pdfbox.pdmodel.PDDocument
+import org.apache.pdfbox.text.PDFTextStripper
 
 object LDATest {
 
 
   //样例类,自动具备 apply,unapply,toString,equals,hashCode,copy 方法
   private case class Params(
-    input: String = "/root/workSpark/sparkLDA/data/shuiWu/txt/",
-    //input: String = "/root/workSpark/sparkLDA/data/test/",
+    //input: String = "/root/workSpark/sparkLDA/data/shuiWu/txt/",
+    input: String = "/root/workSpark/sparkLDA/data/test/",
     k: Int = 20,                         
-    maxIterations: Int = 200,             
+    //maxIterations: Int = 200,             
     docConcentration: Double = -1,      
     topicConcentration: Double = -1,    
     vocabSize: Int = 30000,      
@@ -79,7 +83,7 @@ object LDATest {
 
     lda.setOptimizer(optimizer)
       .setK(params.k)
-      .setMaxIterations(params.maxIterations)
+      //.setMaxIterations(params.maxIterations)
         .setDocConcentration(params.docConcentration)
         .setTopicConcentration(params.topicConcentration)
         .setCheckpointInterval(params.checkpointInterval)
@@ -142,18 +146,40 @@ object LDATest {
         case (file,stream)=>
           val suffixRegex="""file:(.*)\.(\w+)$""".r
           val (path,suffix)=suffixRegex.findAllIn(file).matchData.map{m=>(m.group(1),m.group(2))}.toMap.head
+          val filePath=path+"."+suffix
           val content =  suffix match {
-            case "txt"  => stream
-            case "docx" => new XWPFWordExtractor(POIXMLDocument.openPackage(path+"."+suffix)).getText
+            case "txt"  => Source.fromFile(filePath,"GBK").mkString
+            case "docx" => new XWPFWordExtractor(POIXMLDocument.openPackage(filePath)).getText
+            case "pptx" => new XSLFPowerPointExtractor(POIXMLDocument.openPackage(filePath)).getText();
+            case "xlsx" => new XSSFExcelExtractor(POIXMLDocument.openPackage(filePath)).getText()
+            //case "pdf"  => new PDFTextStripper().getText(PDDocument.load(new File(filePath))) 
+            case "pdf"  =>{
+              val doc=PDDocument.load(new File(filePath))
+              val content=new PDFTextStripper().getText(doc)
+              doc.close()
+              content
+            }
             case _      => 
           }
           (file,content)
       }
+      //.map{
+      //case (file,content)=>{
+      //println(file,content)
+      //(file,content)
+      //}
+      //}
       .filter(_._2.toString.nonEmpty)
       .zipWithIndex
       .map{
         case ((file,content),id)=>
-        ((id,file.replaceAll("^file:","")),(id,content.toString.replaceAll("\n","")))
+          ((id,file.replaceAll("^file:","")),(id,content.toString.replaceAll("\n","")))
+      }
+      .map{
+        case ((id,file),content)=>{
+          println(id, file,content)
+          ((id,file),content)
+        }
       }
 
       wholeTextRDD.cache()
@@ -231,6 +257,9 @@ object LDATest {
             //(documents, vocabArray, selectedTokenCount)
     }
 }
+//def readPDF(filePath:Sting){
+//
+//}
 
 //Serializable 类序列化,因为传递的函数（方法）或引用的数据（字段）需要是可序列化的。
 private class SimpleTokenizert(sc: SparkContext, stopwordFile: String) extends Serializable {
