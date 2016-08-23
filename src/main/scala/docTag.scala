@@ -129,7 +129,6 @@ object LDATest {
           .join(pathRdd)
           .join(titleRdd)
           .join(contentRdd)
-          //.values
           .map{
             case (id,((((rate,topicId),path),title),content)) =>{
               Map("document" -> path, "title" -> title, "keywords" -> topicMap(topicId), "topic" -> topicId.toString, "rate" -> rate.toString, "content" -> content)
