@@ -3,7 +3,6 @@ package com.sugon.spark.LDA
 import java.io.{PrintWriter, File, StringReader}
 import java.text.BreakIterator
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute
-import org.apache.spark.examples.mllib.AbstractParams
 import org.wltea.analyzer.lucene.IKAnalyzer
 import scala.collection.mutable
 import org.apache.log4j.{Level, Logger}
@@ -12,6 +11,7 @@ import org.apache.spark.mllib.clustering._
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
 import scala.io.Source
+import org.elasticsearch.spark._
 //.docx .xlsx
 import org.apache.poi.POIXMLDocument
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor
@@ -20,28 +20,28 @@ import org.apache.poi.xslf.extractor.XSLFPowerPointExtractor
 //.pdf
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.text.PDFTextStripper
+//.txt
+import java.nio.charset.CodingErrorAction
+import scala.io.Codec
 
 object LDATest {
 
-
-  //样例类,自动具备 apply,unapply,toString,equals,hashCode,copy 方法
+  //样例类,自动具备 apply,unapply,toString,equals,hashCode,copy 方法,可print。用普通类的主构造器也可以实现，不过字段前要加val/var，否则变量没有被使用，不会升为字段
   private case class Params(
-    //input: String = "/root/workSpark/sparkLDA/data/shuiWu/txt/",
-    input: String = "/root/workSpark/sparkLDA/data/test/",
+    input: String = "/root/workSpark/sparkLDA/data/shuiWu/txt/",
+    //input: String = "/root/workSpark/sparkLDA/data/test/",
     k: Int = 20,                         
     //maxIterations: Int = 200,             
     docConcentration: Double = -1,      
     topicConcentration: Double = -1,    
     vocabSize: Int = 30000,      
-    stopwordFile: String = "/root/workSpark/sparkLDA/src/stopword.dic",        
     algorithm: String = "em",          
     checkpointDir: Option[String] = None,
-    checkpointInterval: Int = 50
-    //,     
-    //esoutput: String = "model/ldaresult6",
-    //esnodes: String = "192.168.59.128",
-    //esport: String = "9200"
-  ) extends AbstractParams[Params]
+    checkpointInterval: Int = 50 ,     
+    esoutput: String = "ldj/test",
+    esnodes: String = "10.0.51.18",
+    esport: String = "9200"
+  )
 
   def main(args: Array[String]) {
     run(Params())
@@ -50,16 +50,15 @@ object LDATest {
   private def run(params: Params) {
 
     val conf = new SparkConf().setAppName(s"LDAExample with $params").setMaster("local[2]")
-    //conf.set("es.index.auto.create", "true")
-    //conf.set("pushdown","true")
-    //conf.set("es.nodes" , params.esnodes)
-    //conf.set("es.port", params.esport)
+    conf.set("es.index.auto.create", "true")
+    conf.set("pushdown","true")
+    conf.set("es.nodes" , params.esnodes)
+    conf.set("es.port", params.esport)
 
     val sc = new SparkContext(conf)
     Logger.getRootLogger.setLevel(Level.WARN)
     val preprocessStart = System.nanoTime()
-    val (corpus, vocabArray, actualNumTokens, filePaths) = preprocess(sc, params.input, params.vocabSize, params.stopwordFile)
-    //val (corpus, vocabArray, actualNumTokens) = preprocess(sc, params.input, params.vocabSize, params.stopwordFile)
+    val (corpus, vocabArray, actualNumTokens, pathRdd,titleRdd,contentRdd) = preprocess(sc, params.input, params.vocabSize)
     corpus.cache()
     val actualCorpusSize = corpus.count()
     val actualVocabSize = vocabArray.size
@@ -100,7 +99,7 @@ object LDATest {
         println(s"\t Training time: $elapsed sec")
 
         //提取结果
-        val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 6)
+        val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 10)
         val topics = topicIndices.map { case (terms, termWeights) =>
           terms.zip(termWeights).map { case (term, weight) => (vocabArray(term.toInt), weight) }
         }
@@ -125,9 +124,20 @@ object LDATest {
           val avgLogLikelihood = distLDAModel.logLikelihood / actualCorpusSize.toDouble
           println(s"\t Training data average log likelihood: $avgLogLikelihood")
           val topicToFile= distLDAModel.topicDistributions.flatMap{
-            case(key,value) => List(key -> value.toArray.zipWithIndex.max._2)
-          }.join(filePaths).values
-          topicToFile.foreach(println)
+            case(id,value) => List(id-> value.toArray.zipWithIndex.max)
+          }
+          .join(pathRdd)
+          .join(titleRdd)
+          .join(contentRdd)
+          //.values
+          .map{
+            case (id,((((rate,topicId),path),title),content)) =>{
+              Map("document" -> path, "title" -> title, "keywords" -> topicMap(topicId), "topic" -> topicId.toString, "rate" -> rate.toString, "content" -> content)
+            }
+          }
+          //topicToFile.foreach(println)
+
+            topicToFile.saveToEs(params.esoutput)
         }
         sc.stop()
   }
@@ -136,8 +146,7 @@ object LDATest {
   private def preprocess(
     sc: SparkContext,
     paths: String,
-    vocabSize: Int,
-    stopwordFile: String)= {
+    vocabSize: Int)= {
 
       //读取待分析文档，10个slices
       val originalFileRDD = sc.wholeTextFiles(paths+"/*",8)
@@ -148,7 +157,17 @@ object LDATest {
           val (path,suffix)=suffixRegex.findAllIn(file).matchData.map{m=>(m.group(1),m.group(2))}.toMap.head
           val filePath=path+"."+suffix
           val content =  suffix match {
-            case "txt"  => Source.fromFile(filePath,"GBK").mkString
+            case "txt"  => {
+              var txtContent:String=""
+              try{
+                txtContent=Source.fromFile(filePath,"GBK").mkString
+              }catch{
+                case _ :Throwable => {
+                  txtContent=Source.fromFile(filePath,"UTF-8").mkString
+                }
+              }
+              txtContent
+            }
             case "docx" => new XWPFWordExtractor(POIXMLDocument.openPackage(filePath)).getText
             case "pptx" => new XSLFPowerPointExtractor(POIXMLDocument.openPackage(filePath)).getText();
             case "xlsx" => new XSSFExcelExtractor(POIXMLDocument.openPackage(filePath)).getText()
@@ -159,7 +178,7 @@ object LDATest {
               doc.close()
               content
             }
-            case _      => 
+            case _   => 
           }
           (file,content)
       }
@@ -173,131 +192,101 @@ object LDATest {
       .zipWithIndex
       .map{
         case ((file,content),id)=>
-          ((id,file.replaceAll("^file:","")),(id,content.toString.replaceAll("\n","")))
+            (
+              id -> 
+              (
+                file.replaceAll("^file:","")
+                , content.toString.substring(0,content.toString.indexOf("\n"))
+                , content.toString.replaceAll("\n"," ").replaceAll("\r"," ")
+              )
+            )
       }
-      .map{
-        case ((id,file),content)=>{
-          println(id, file,content)
-          ((id,file),content)
-        }
-      }
+      //.map{
+      //case ((id,file),content)=>{
+      //println(id, file)
+      //((id,file),content)
+      //}
+      //}
 
       wholeTextRDD.cache()
       
-      val pathRDD=wholeTextRDD.keys
-      val textRDD=wholeTextRDD.values
+      val pathRDD=wholeTextRDD.map{
+        case (id,(path,title,content))=>{
+          (id,path)
+        }
+      }
+      val contentRDD=wholeTextRDD.map{
+        case (id,(path,title,content))=>{
+          (id,content)
+        }
+      }
+      val titleRDD=wholeTextRDD.map{
+        case (id,(path,title,content))=>{
+          (id,title)
+        }
+      }
 
-      //停词表
-      val tokenizer = new SimpleTokenizert(sc, stopwordFile)
 
-      val pretextRDD = textRDD
+      val minWordLength = 2
+      val pretextRDD = contentRDD
       //转换成流，作为tokenStream输入参数
         .map{ case (id,line) =>(id, new StringReader(line)) }
         //分词
-          .map{ case (id,line) =>(id, new IKAnalyzer(true).tokenStream("",line)) }
-          .map{ case (id,y) =>
-            val term: CharTermAttribute = y.getAttribute(classOf[CharTermAttribute])
-            var newline = ""
-            while (y.incrementToken){
-              newline += term.toString + " "
+        .map{ case (id,line) =>(id, new IKAnalyzer(true).tokenStream("",line)) }
+        .map{ case (id,y) =>
+          val term: CharTermAttribute = y.getAttribute(classOf[CharTermAttribute])
+          var newline = new mutable.ArrayBuffer[String]()
+          while (y.incrementToken){
+            if (term.toString.length >= minWordLength) newline += term.toString
+          }
+          //println(id,newline)
+         (id, newline)
+        }
+        pretextRDD.cache()
+
+        //文档中的词频
+        val wordCounts: RDD[(String, Long)] = pretextRDD
+          .flatMap { case (_, tokens) => tokens.map(_ -> 1L) }
+          .reduceByKey(_ + _)
+
+          wordCounts.cache()
+          //println("")
+          //println("vocabulary:")
+          //println("============")
+          //wordCounts.sortBy(_._2, ascending = false).foreach(println)
+          //println("============")
+
+          //取前 vocabSize 个词，然后要求词频>5，生成词库列表[word，Index]，词的数量
+          val fullVocabSize = wordCounts.count()
+          val (vocab: Map[String, Int], selectedTokenCount: Long) = {
+            val tmpSortedWCpre: Array[(String, Long)] = if (vocabSize == -1 || fullVocabSize <= vocabSize) {
+              wordCounts.collect().sortBy(-_._2)
+            } else {
+              wordCounts.sortBy(_._2, ascending = false).take(vocabSize)
             }
-           (id, newline)
+            val tmpSortedWC = tmpSortedWCpre.filter(_._2>0)
+            (tmpSortedWC.map(_._1).zipWithIndex.toMap, tmpSortedWC.map(_._2).sum)
           }
 
-          //去停词
-          val tokenized: RDD[(Long, IndexedSeq[String])] = pretextRDD.map { 
-            case (id, text) => id -> tokenizer.getWords(text)
+          //文档-词频 矩阵
+          val documents = pretextRDD.map { case (id, tokens) =>
+            val wc = new mutable.HashMap[Int, Int]()
+            tokens.foreach { term =>
+              if (vocab.contains(term)) {
+                val termIndex = vocab(term)
+                wc(termIndex) = wc.getOrElse(termIndex, 0) + 1
+              }
+            }
+            val indices = wc.keys.toArray.sorted
+            val values = indices.map(i => wc(i).toDouble)
+            val sb = Vectors.sparse(vocab.size, indices, values)
+            (id, sb)
           }
 
-          tokenized.cache()
-
-          //文档中的词频
-          val wordCounts: RDD[(String, Long)] = tokenized
-            .flatMap { case (_, tokens) => tokens.map(_ -> 1L) }
-            .reduceByKey(_ + _)
-
-            wordCounts.cache()
-            //println("")
-            //println("vocabulary:")
-            //println("============")
-            //wordCounts.sortBy(_._2, ascending = false).foreach(println)
-            //println("============")
-
-            //取前 vocabSize 个词，然后要求词频>5，生成词库列表[word，Index]，词的数量
-            val fullVocabSize = wordCounts.count()
-            val (vocab: Map[String, Int], selectedTokenCount: Long) = {
-              val tmpSortedWCpre: Array[(String, Long)] = if (vocabSize == -1 || fullVocabSize <= vocabSize) {
-                wordCounts.collect().sortBy(-_._2)
-              } else {
-                wordCounts.sortBy(_._2, ascending = false).take(vocabSize)
-              }
-              val tmpSortedWC = tmpSortedWCpre.filter(_._2>0)
-              (tmpSortedWC.map(_._1).zipWithIndex.toMap, tmpSortedWC.map(_._2).sum)
-            }
-
-            //文档-词频 矩阵
-            val documents = tokenized.map { case (id, tokens) =>
-              val wc = new mutable.HashMap[Int, Int]()
-              tokens.foreach { term =>
-                if (vocab.contains(term)) {
-                  val termIndex = vocab(term)
-                  wc(termIndex) = wc.getOrElse(termIndex, 0) + 1
-                }
-              }
-              val indices = wc.keys.toArray.sorted
-              val values = indices.map(i => wc(i).toDouble)
-              val sb = Vectors.sparse(vocab.size, indices, values)
-              (id, sb)
-            }
-
-            //词库数组
-            val vocabArray = new Array[String](vocab.size)
-            vocab.foreach { case (term, i) => vocabArray(i) = term }
-            (documents, vocabArray, selectedTokenCount, pathRDD)
-            //(documents, vocabArray, selectedTokenCount)
+          //词库数组
+          val vocabArray = new Array[String](vocab.size)
+          vocab.foreach { case (term, i) => vocabArray(i) = term }
+          (documents, vocabArray, selectedTokenCount, pathRDD,titleRDD,contentRDD)
+          //(documents, vocabArray, selectedTokenCount)
     }
-}
-//def readPDF(filePath:Sting){
-//
-//}
-
-//Serializable 类序列化,因为传递的函数（方法）或引用的数据（字段）需要是可序列化的。
-private class SimpleTokenizert(sc: SparkContext, stopwordFile: String) extends Serializable {
-
-  private val stopwords: Set[String] = if (stopwordFile.isEmpty) {
-    Set.empty[String]
-  } else {
-    val stopwordText = sc.textFile(stopwordFile).collect()
-    stopwordText.flatMap(_.stripMargin.split("\\s+")).toSet
-  }
-  private val allWordRegex = "^(\\p{L}*)$".r
-  private val minWordLength = 3
-
-  //去停词
-  def getWords(text: String): IndexedSeq[String] = {
-
-    val words = new mutable.ArrayBuffer[String]()
-    val wb = BreakIterator.getWordInstance
-    wb.setText(text)
-
-    var current = wb.first()
-    var end = wb.next()
-    while (end != BreakIterator.DONE) {
-      val word: String = text.substring(current, end).toLowerCase
-      word match {
-        case allWordRegex(w) if w.length >= minWordLength && !stopwords.contains(w) =>
-          words += w
-        case _ =>
-      }
-
-      current = end
-      try {
-        end = wb.next()
-      } catch {
-        case e: Exception =>
-          end = BreakIterator.DONE
-      }
-    }
-    words
-  }
 }
