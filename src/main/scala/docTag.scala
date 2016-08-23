@@ -20,9 +20,6 @@ import org.apache.poi.xslf.extractor.XSLFPowerPointExtractor
 //.pdf
 import org.apache.pdfbox.pdmodel.PDDocument
 import org.apache.pdfbox.text.PDFTextStripper
-//.txt
-import java.nio.charset.CodingErrorAction
-import scala.io.Codec
 
 object LDATest {
 
@@ -105,7 +102,7 @@ object LDATest {
         }
 
 
-        //topic得关键词
+        //topic的关键词
         import scala.collection.mutable.Map
         var topicMap = Map[Int, String]()
         topics.zipWithIndex.foreach { case (topic, i) =>
@@ -118,7 +115,7 @@ object LDATest {
         }
         topicMap.foreach(println)
 
-        //topic->文件位置
+        //保存数据到es
         if (ldaModel.isInstanceOf[DistributedLDAModel]) {
           val distLDAModel = ldaModel.asInstanceOf[DistributedLDAModel]
           val avgLogLikelihood = distLDAModel.logLikelihood / actualCorpusSize.toDouble
