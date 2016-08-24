@@ -8,7 +8,8 @@ import scala.collection.mutable
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.{SparkContext, SparkConf}
 import org.apache.spark.mllib.clustering._
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.mllib.linalg.{Vector, Vectors,SparseVector}
+import org.apache.spark.mllib.feature.{HashingTF, IDF}
 import org.apache.spark.rdd.RDD
 import scala.io.Source
 import org.elasticsearch.spark._
@@ -56,7 +57,7 @@ object LDATest {
     val sc = new SparkContext(conf)
     Logger.getRootLogger.setLevel(Level.WARN)
     val preprocessStart = System.nanoTime()
-    val (corpus, vocabArray, actualNumTokens, pathRdd,titleRdd,contentRdd) = preprocess(sc, params.input,params.pos, params.vocabSize)
+    val (corpus, vocabArray, actualNumTokens, pathRdd,titleRdd,contentRdd,termRdd) = preprocess(sc, params.input,params.pos, params.vocabSize)
     corpus.cache()
     val actualCorpusSize = corpus.count()
     val actualVocabSize = vocabArray.size
@@ -68,6 +69,43 @@ object LDATest {
     println(s"\t Training set size: $actualNumTokens tokens")
     println(s"\t Preprocessing time: $preprocessElapsed sec")
     println()
+
+  
+    val hashingTF = new HashingTF(Math.pow(2, 18).toInt)  
+    //val hashingTF = new HashingTF()  
+    //这里将每一行的行号作为doc id，每一行的分词结果生成tf词频向量  
+    val id_tf_pairs = termRdd.map {  
+      case (id, terms) =>  
+        val tf = hashingTF.transform(terms)  
+        (id, tf)  
+    }  
+    id_tf_pairs.cache()  
+    //构建idf model  
+    val idf = new IDF().fit(id_tf_pairs.values)  
+    //将tf向量转换成tf-idf向量  
+    val id_tfidf_pairs = id_tf_pairs.mapValues(v => idf.transform(v))  
+
+    val hashIndex_term=termRdd.values.flatMap(_.toList).distinct.map{
+      term=>(hashingTF.indexOf(term),term)
+    }.collectAsMap()
+    //hashIndex_term.foreach(println)
+    //println(hashIndex_term.get(46012).mkString)
+    //id_tfidf_pairs.foreach(println)
+    
+    val termsShowedPerDocFromTfidf=10
+    val tfidfRdd=id_tfidf_pairs.map{
+      case (id,tfidfVector)=>{
+        val sv = tfidfVector.asInstanceOf[SparseVector]  
+        val topTerms=sv.values.zip(sv.indices).sortWith(_._1 >_._1).take(Math.min(termsShowedPerDocFromTfidf,sv.indices.size)).toMap.map{
+          case(value,index)=>{
+            hashIndex_term.get(index).mkString
+          }
+        }
+        (id, topTerms)
+      }
+    }
+    //.foreach(println)
+
 
     //配置LDA
     val lda = new LDA()
@@ -97,27 +135,36 @@ object LDATest {
         println(s"\t Training time: $elapsed sec")
 
         //提取结果
-        val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 30)
+        val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 4)
         val topics = topicIndices.map { case (terms, termWeights) =>
           terms.zip(termWeights).map { case (term, weight) => (vocabArray(term.toInt), weight) }
         }
 
 
         //topic的关键词
-        val termsShowedPerTopic=10
+        //val termsShowedPerTopic=3
         import scala.collection.mutable.Map
-        var topicMap = Map[Int, String]()
-        topics.zipWithIndex.foreach { case (topic, i) =>
-          val topicMapKey = i
-          var topicMapValue = ""
-          topic.foreach { case (term, weight) =>
-            if(!contained(topicMapValue,term)) topicMapValue += term + ","
+        //var topicMap = Map[Int, String]()
+        //topics.zipWithIndex.foreach { case (topic, i) =>
+        //val topicMapKey = i
+          //var topicMapValue = ""
+          //topic.foreach { case (term, weight) =>
+          ////if(!contained(topicMapValue,term)) topicMapValue += term + ","
+          //topicMapValue += term + ","
+          //}
+          //topicMap += (topicMapKey->topicMapValue.split(",").take(Seq(termsShowedPerTopic,topicMapValue.split(",").size).min).mkString(","))
+          //topicMap += (topicMapKey->topicMapValue.substring(0,topicMapValue.length-1))
+          //}
+        var topicMap = topics.zipWithIndex.map{
+          case (topic,i)=>{
+            (i,topic.toMap.keys.mkString(","))
           }
-          topicMap += (topicMapKey->topicMapValue.split(",").take(Seq(termsShowedPerTopic,topicMapValue.split(",").size).min).mkString(","))
-        }
+        }.toMap
+
         topicMap.foreach(println)
 
         //保存数据到es
+        val keywordNum=6
         if (ldaModel.isInstanceOf[DistributedLDAModel]) {
           val distLDAModel = ldaModel.asInstanceOf[DistributedLDAModel]
           val avgLogLikelihood = distLDAModel.logLikelihood / actualCorpusSize.toDouble
@@ -128,13 +175,28 @@ object LDATest {
           .join(pathRdd)
           .join(titleRdd)
           .join(contentRdd)
+          .join(tfidfRdd)
           .map{
-            case (id,((((rate,topicId),path),title),content)) =>{
-              Map("document" -> path, "title" -> title, "keywords" -> topicMap(topicId), "topic" -> topicId.toString, "rate" -> rate.toString, "content" -> content)
+            case (id,(((((rate,topicId),path),title),content),tfidf)) =>{
+              //var keywords=tfidf.mkString(",")+","
+              var keywords=""
+              topicMap(topicId).split(",").foreach{
+                term=>{
+                  if(!contained(keywords,term)) keywords+= term + ","
+                }
+              }
+              tfidf.foreach{
+                term=>{
+                  if(!contained(keywords,term)) keywords+= term + ","
+                }
+              }
+              val keywordFinal=keywords.split(",").take(Math.min(keywordNum,keywords.split(",").size)).mkString(",")
+              //Map("document" -> path, "title" -> title, "keywords" ->keywords , "topic" -> topicId.toString, "rate" -> rate.toString, "content" -> content)
+              Map("document" -> path, "title" -> title, "keywords" ->keywordFinal, "topic" -> topicId.toString, "rate" -> rate.toString, "content" -> content)
             }
           }
           //topicToFile.foreach(println)
-            topicToFile.saveToEs(params.esoutput)
+          topicToFile.saveToEs(params.esoutput)
         }
         sc.stop()
   }
@@ -233,7 +295,7 @@ object LDATest {
       }.toMap
       //pos.foreach(println)
       val minWordLength = 2
-      val pretextRDD = contentRDD
+      val termRDD = contentRDD
       //转换成流，作为tokenStream输入参数
         .map{ case (id,line) =>(id, new StringReader(line)) }
         //分词
@@ -244,15 +306,15 @@ object LDATest {
           while (y.incrementToken){
             val t=term.toString
             var posClass=pos.get(t).getOrElse("-").charAt(0).toString
-            if (t.length >= minWordLength && (posClass=="n"||posClass=="a"||posClass=="g"||posClass=="i"||posClass=="l")) newline += t
+            if (t.length >= minWordLength && (posClass=="n"||posClass=="a"||posClass=="g"||posClass=="i")) newline += t
           }
           //println(id,newline)
          (id, newline)
         }
-        pretextRDD.cache()
+        termRDD.cache()
 
         //文档中的词频
-        val wordCounts: RDD[(String, Long)] = pretextRDD
+        val wordCounts: RDD[(String, Long)] = termRDD
           .flatMap { case (_, tokens) => tokens.map(_ -> 1L) }
           .reduceByKey(_ + _)
 
@@ -276,7 +338,7 @@ object LDATest {
           }
 
           //文档-词频 矩阵
-          val documents = pretextRDD.map { case (id, tokens) =>
+          val documents = termRDD.map { case (id, tokens) =>
             val wc = new mutable.HashMap[Int, Int]()
             tokens.foreach { term =>
               if (vocab.contains(term)) {
@@ -293,7 +355,7 @@ object LDATest {
           //词库数组
           val vocabArray = new Array[String](vocab.size)
           vocab.foreach { case (term, i) => vocabArray(i) = term }
-          (documents, vocabArray, selectedTokenCount, pathRDD,titleRDD,contentRDD)
+          (documents, vocabArray, selectedTokenCount, pathRDD,titleRDD,contentRDD,termRDD)
           //(documents, vocabArray, selectedTokenCount)
     }
     private def contained (str1:String,str2:String):Boolean={
