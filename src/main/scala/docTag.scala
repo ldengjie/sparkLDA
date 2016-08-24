@@ -27,8 +27,9 @@ object LDATest {
   private case class Params(
     input: String = "/root/workSpark/sparkLDA/data/shuiWu/txt/",
     //input: String = "/root/workSpark/sparkLDA/data/test/",
+    pos: String = "/root/workSpark/sparkLDA/lib/pos_ansj_default.dic",
     k: Int = 20,                         
-    //maxIterations: Int = 200,             
+    //maxIterations: Int = 100,             
     docConcentration: Double = -1,      
     topicConcentration: Double = -1,    
     vocabSize: Int = 30000,      
@@ -55,7 +56,7 @@ object LDATest {
     val sc = new SparkContext(conf)
     Logger.getRootLogger.setLevel(Level.WARN)
     val preprocessStart = System.nanoTime()
-    val (corpus, vocabArray, actualNumTokens, pathRdd,titleRdd,contentRdd) = preprocess(sc, params.input, params.vocabSize)
+    val (corpus, vocabArray, actualNumTokens, pathRdd,titleRdd,contentRdd) = preprocess(sc, params.input,params.pos, params.vocabSize)
     corpus.cache()
     val actualCorpusSize = corpus.count()
     val actualVocabSize = vocabArray.size
@@ -96,22 +97,23 @@ object LDATest {
         println(s"\t Training time: $elapsed sec")
 
         //提取结果
-        val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 10)
+        val topicIndices = ldaModel.describeTopics(maxTermsPerTopic = 30)
         val topics = topicIndices.map { case (terms, termWeights) =>
           terms.zip(termWeights).map { case (term, weight) => (vocabArray(term.toInt), weight) }
         }
 
 
         //topic的关键词
+        val termsShowedPerTopic=10
         import scala.collection.mutable.Map
         var topicMap = Map[Int, String]()
         topics.zipWithIndex.foreach { case (topic, i) =>
           val topicMapKey = i
           var topicMapValue = ""
           topic.foreach { case (term, weight) =>
-            topicMapValue += term + ","
+            if(!contained(topicMapValue,term)) topicMapValue += term + ","
           }
-          topicMap += (topicMapKey->topicMapValue.substring(0,topicMapValue.length-1))
+          topicMap += (topicMapKey->topicMapValue.split(",").take(Seq(termsShowedPerTopic,topicMapValue.split(",").size).min).mkString(","))
         }
         topicMap.foreach(println)
 
@@ -132,7 +134,6 @@ object LDATest {
             }
           }
           //topicToFile.foreach(println)
-
             topicToFile.saveToEs(params.esoutput)
         }
         sc.stop()
@@ -142,6 +143,7 @@ object LDATest {
   private def preprocess(
     sc: SparkContext,
     paths: String,
+    posPath: String,
     vocabSize: Int)= {
 
       //读取待分析文档，10个slices
@@ -223,6 +225,13 @@ object LDATest {
       }
 
 
+      val pos:Map[String,String]=Source.fromFile(posPath).getLines().map{
+        line=>{
+          val s=line.split("\\s")
+          s(0)->s(1)
+        }
+      }.toMap
+      //pos.foreach(println)
       val minWordLength = 2
       val pretextRDD = contentRDD
       //转换成流，作为tokenStream输入参数
@@ -233,7 +242,9 @@ object LDATest {
           val term: CharTermAttribute = y.getAttribute(classOf[CharTermAttribute])
           var newline = new mutable.ArrayBuffer[String]()
           while (y.incrementToken){
-            if (term.toString.length >= minWordLength) newline += term.toString
+            val t=term.toString
+            var posClass=pos.get(t).getOrElse("-").charAt(0).toString
+            if (t.length >= minWordLength && (posClass=="n"||posClass=="a"||posClass=="g"||posClass=="i"||posClass=="l")) newline += t
           }
           //println(id,newline)
          (id, newline)
@@ -284,5 +295,12 @@ object LDATest {
           vocab.foreach { case (term, i) => vocabArray(i) = term }
           (documents, vocabArray, selectedTokenCount, pathRDD,titleRDD,contentRDD)
           //(documents, vocabArray, selectedTokenCount)
+    }
+    private def contained (str1:String,str2:String):Boolean={
+      if(str1.nonEmpty){
+        str1.split(",").map{ term=>{ term.contains(str2) || str2.contains(term) } } .reduce(_||_)
+      }else{
+        false
+      }
     }
 }
