@@ -1,1 +1,1 @@
-spark-submit --class com.sugon.spark.TopicLDA.LDATest  --master local[4]  target/scala-2.10/doctag_2.10-1.0.jar
+spark-submit --class com.sugon.spark.LDA.LDATest  --master local[6] target/scala-2.10/docTag-assembly-1.0.jar
