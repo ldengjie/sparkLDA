@@ -25,7 +25,8 @@ object LDATest {
 
   //样例类,自动具备 apply,unapply,toString,equals,hashCode,copy 方法,可print。用普通类的主构造器也可以实现，不过字段前要加val/var，否则变量没有被使用，不会升为字段
   private case class Params(
-    input: String = "file:///spark/work/sparkLDA/data/diShui/doc/1/*",
+    //input: String = "file:///spark/work/sparkLDA/data/diShui/doc/*",
+    input: String = "file:///root/iWork/sparkLDA/data/diShui/doc/*",
     k: Int = 50,                         
     //maxIterations: Int = 100,             
     docConcentration: Double = -1,      
