@@ -26,9 +26,9 @@ object LDATest {
   //样例类,自动具备 apply,unapply,toString,equals,hashCode,copy 方法,可print。用普通类的主构造器也可以实现，不过字段前要加val/var，否则变量没有被使用，不会升为字段
   private case class Params(
     //input: String = "file:///spark/work/sparkLDA/data/diShui/doc/*",
-    input: String = "file:///root/iWork/sparkLDA/data/diShui/doc/*",
-    k: Int = 50,                         
-    //maxIterations: Int = 100,             
+    input: String = "file:///spark/work/data/sparkLDA/diShui/doc/doc/1*/*",
+    k: Int = 10,                         
+    maxIterations: Int = 500,             
     docConcentration: Double = -1,      
     topicConcentration: Double = -1,    
     vocabSize: Int = 30000,      
@@ -117,7 +117,7 @@ object LDATest {
 
     lda.setOptimizer(optimizer)
       .setK(params.k)
-      //.setMaxIterations(params.maxIterations)
+        .setMaxIterations(params.maxIterations)
         .setDocConcentration(params.docConcentration)
         .setTopicConcentration(params.topicConcentration)
         .setCheckpointInterval(params.checkpointInterval)

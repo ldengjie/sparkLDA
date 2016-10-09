@@ -1,1 +1,1 @@
-spark-submit --class com.sugon.spark.LDA.LDATest  --master spark://node1:7077 --total-executor-cores 20 --executor-memory 12g target/scala-2.10/docTag-assembly-1.0.jar 
+spark-submit --class com.sugon.spark.LDA.LDATest  --master spark://node1:7077 --total-executor-cores 34 --executor-memory 26g  target/scala-2.10/docTag-assembly-1.0.jar 
