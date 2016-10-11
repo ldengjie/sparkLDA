@@ -16,6 +16,7 @@ libraryDependencies += "org.apache.poi" % "poi-ooxml" % "3.14"
 libraryDependencies += "org.apache.poi" % "poi-scratchpad" % "3.14"
 libraryDependencies += "org.apache.pdfbox" % "pdfbox" % "2.0.2"
 libraryDependencies += "org.elasticsearch" %% "elasticsearch-spark" %"2.3.4"
+//libraryDependencies += "com.databricks" % "spark-csv_2.10" % "1.2.0"
 
 packAutoSettings
 

@@ -25,16 +25,18 @@ object LDATest {
 
   //样例类,自动具备 apply,unapply,toString,equals,hashCode,copy 方法,可print。用普通类的主构造器也可以实现，不过字段前要加val/var，否则变量没有被使用，不会升为字段
   private case class Params(
-    //input: String = "file:///spark/work/sparkLDA/data/diShui/doc/*",
-    input: String = "file:///spark/work/data/sparkLDA/diShui/doc/doc/1*/*",
+    input: String = "hdfs:///user/root/data/ZhuJiangShuMa/ZhuJiangShuMa.csv",
+    //input: String = "file:///spark/work/data/sparkLDA/ZhuJiangShuMa/ZhuJiangShuMa.csv",
     k: Int = 10,                         
     maxIterations: Int = 500,             
     docConcentration: Double = -1,      
     topicConcentration: Double = -1,    
     vocabSize: Int = 30000,      
     algorithm: String = "em",          
-    checkpointDir: Option[String] = None,
-    checkpointInterval: Int = 50 ,     
+    //checkpointDir: Option[String] = Some("hdfs://node1:8020/user/root/LDACheckPointDir/"),
+    checkpointDir: Option[String] = Some("hdfs://xdata/user/root/LDACheckPointDir/"),
+    //checkpointDir: Option[String] = Some("file:///spark/work/LDACheckPointDir/"),
+    checkpointInterval: Int = 10 ,     
     esoutput: String = "lidj/test",
     esnodes: String = "node1",
     esport: String = "9200"
@@ -47,16 +49,16 @@ object LDATest {
   private def run(params: Params) {
 
     val conf = new SparkConf().setAppName(s"LDAExample with $params")//.setMaster("local[2]")
-    conf.set("es.index.auto.create", "true")
-    conf.set("spark.executor.instances", "2")
+    conf.set("spark.executor.instances", "1")
     conf.set("pushdown","true")
+    conf.set("es.index.auto.create", "true")
     conf.set("es.nodes" , params.esnodes)
     conf.set("es.port", params.esport)
 
     val sc = new SparkContext(conf)
     Logger.getRootLogger.setLevel(Level.WARN)
     val preprocessStart = System.nanoTime()
-    val (corpus, vocabArray, actualNumTokens, pathRdd,titleRdd,contentRdd,termRdd) = preprocess(sc, params.input, params.vocabSize)
+    val (corpus, vocabArray, actualNumTokens, contentRdd,termRdd) = preprocess(sc, params.input, params.vocabSize)
     corpus.cache()
     val actualCorpusSize = corpus.count()
     val actualVocabSize = vocabArray.size
@@ -159,12 +161,10 @@ object LDATest {
           val topicToFile= distLDAModel.topicDistributions.flatMap{
             case(id,value) => List(id-> value.toArray.zipWithIndex.max)
           }
-            .join(pathRdd)
-            .join(titleRdd)
             .join(contentRdd)
             .join(tfidfRdd)
             .map{
-              case (id,(((((rate,topicId),path),title),content),tfidf)) =>{
+              case (id,(((rate,topicId),content),tfidf)) =>{
                 //var keywords=tfidf.mkString(",")+","
                 var keywords=""
                 tfidf.foreach{
@@ -178,36 +178,7 @@ object LDATest {
                   }
                 }
                 val keywordFinal=keywords.split(",").take(Math.min(keywordNum,keywords.split(",").size)).mkString(",")
-                //val titleRe=""".*/(.+)\.\w+$""".r
-                val titleRe1="""《.*?[^》]通知》""".r
-                val titleRe2="""关于.*?(通知|请示|意见|函)""".r
-                val titleRe3=""".*(通知|请示|意见|函|号|纪要|安排表|处理表|编发)""".r
-                val titleRe4="""《.*?》""".r
-                val titleRe5=""".*? """.r
-                var titleStr=titleRe1.findFirstIn(content).getOrElse(
-                  titleRe2.findFirstIn(content).getOrElse(
-                    titleRe3.findFirstIn(content).getOrElse(
-                      titleRe4.findFirstIn(content).getOrElse(
-                        titleRe5.findFirstIn(content).getOrElse(
-                          ""
-                        )
-                      )
-                    )
-                  )
-                )
-                  .replaceAll("内部资料","")
-                  .replaceAll("注意保管","")
-                  .replaceAll("特急","")
-                  .replaceAll("缓 急","")
-                  .replaceAll("紧急程度","")
-                  .replaceAll("密级","")
-                  .replaceAll("《","")
-                  .replaceAll("》","")
-                  //val titleEnd=content.indexOf(" ")
-                  //val titleIndex=if(titleEnd<0) content.length else titleEnd
-                  //val titleStr=content.substring(0,titleIndex)
-
-                  Map("document" -> path, "title" -> titleStr, "keywords" ->keywordFinal, "topic" -> topicId.toString, "rate" -> rate.toString, "content" -> content)
+                  Map("document" -> "path", "title" -> "titleStr", "keywords" ->keywordFinal, "topic" -> topicId.toString, "rate" -> rate.toString, "content" -> content)
               }
             }
             //topicToFile.foreach(println)
@@ -222,97 +193,9 @@ object LDATest {
     paths: String,
     vocabSize: Int)= {
 
-      //读取待分析文档，10个slices
-      val originalFileRDD = sc.wholeTextFiles(paths)
+          val wholeTextRDD=sc.textFile(paths)
 
-      val wholeTextRDD=originalFileRDD.map{
-        case (file,stream)=>
-          val suffixRegex="""file:(.*)\.(\w+)$""".r
-          val (path,suffix)=suffixRegex.findAllIn(file).matchData.map{m=>(m.group(1),m.group(2))}.toMap.head
-          val filePath=path+"."+suffix
-          val officeRegex="""^(doc|docx|xls|xlsx|ppt|pptx)$""".r
-          var txtContent:String=""
-          suffix match {
-            case "txt"  => {
-              try{
-                txtContent=Source.fromFile(filePath,"GBK").mkString
-              }catch{
-                case _ :Throwable => {
-                  txtContent=Source.fromFile(filePath,"UTF-8").mkString
-                }
-              }
-            }
-            case officeRegex(office) => {
-              try{
-                val inputFile = new File(filePath);   
-                val extractor = ExtractorFactory.createExtractor(inputFile);   
-                //println("read  office  file: "+filePath) 
-                txtContent=extractor.getText()   
-              }catch{
-                case _ :Throwable => {
-                  //println("bad  office  file: "+filePath) 
-                }
-              }
-            }
-            case "pdf"  =>{
-              try{
-                val doc=PDDocument.load(new File(filePath))
-                val txtContent=new PDFTextStripper().getText(doc)
-                doc.close()
-              }catch{
-                case _ :Throwable => {
-                  //println("bad  pdf  file: "+filePath) 
-                }
-              }
-            }
-            case _   => 
-          }
-          txtContent=txtContent.replaceAll("^\\s*\n","").replaceAll("\\s*\n","\n")
-          (file,txtContent)
-      }
-      //.map{
-      //case (file,content)=>{
-      //println(file,content)
-      //(file,content)
-      //}
-      //}
-        .filter(_._2.toString.nonEmpty)
-        .zipWithIndex
-        .map{
-          case ((file,content),id)=>
-            (
-              id -> 
-              (
-                file.replaceAll("^file:","")
-                , content.toString.substring(0,Math.max(0,content.toString.indexOf("\n")))
-                , content.toString.replaceAll("\n"," ").replaceAll("\r"," ")
-              )
-            )
-        }
-        //.map{
-        //case ((id,file),content)=>{
-        //println(id, file)
-        //((id,file),content)
-        //}
-        //}
-
-        wholeTextRDD.cache()
-
-        val pathRDD=wholeTextRDD.map{
-          case (id,(path,title,content))=>{
-            (id,path)
-          }
-        }
-        val contentRDD=wholeTextRDD.map{
-          case (id,(path,title,content))=>{
-            (id,content)
-          }
-        }
-        val titleRDD=wholeTextRDD.map{
-          case (id,(path,title,content))=>{
-            (id,title)
-          }
-        }
+        val contentRDD=wholeTextRDD.map{_.split(",")}.filter(_.size>4).map{splited=>splited(4).trim}.zipWithIndex.map{case(line,id)=>(id,line)}
 
         val pos= Source.fromInputStream(getClass().getClassLoader().getResourceAsStream("pos_ansj_default.dic")).getLines().map{
           line=>{
@@ -321,7 +204,7 @@ object LDATest {
           }
         }.toMap
         //pos.foreach(println)
-        val minWordLength = 2
+        val minWordLength = 1
         val termRDD = contentRDD
         //转换成流，作为tokenStream输入参数
           .map{ case (id,line) =>(id, new StringReader(line)) }
@@ -333,7 +216,8 @@ object LDATest {
               while (y.incrementToken){
                 val t=term.toString
                 var posClass=pos.get(t).getOrElse("-").charAt(0).toString
-                if (t.length >= minWordLength && (posClass=="n"||posClass=="a")) newline += t
+                if (t.length >= minWordLength ) newline += t
+                //if (t.length >= minWordLength && (posClass=="n"||posClass=="a")) newline += t
                 //if (t.length >= minWordLength && (posClass=="n"||posClass=="a"||posClass=="g"||posClass=="i")) newline += t
               //if (t.length >= minWordLength ) newline += t
               }
@@ -384,7 +268,7 @@ object LDATest {
               //词库数组
               val vocabArray = new Array[String](vocab.size)
               vocab.foreach { case (term, i) => vocabArray(i) = term }
-              (documents, vocabArray, selectedTokenCount, pathRDD,titleRDD,contentRDD,termRDD)
+              (documents, vocabArray, selectedTokenCount, contentRDD,termRDD)
               //(documents, vocabArray, selectedTokenCount)
   }
     private def contained (str1:String,str2:String):Boolean={
