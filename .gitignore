@@ -6,6 +6,7 @@ metastore_db/
 *log*
 .*.swp
 derby*
+tmp*
 
 # sbt specific
 .cache

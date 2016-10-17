@@ -1,6 +1,4 @@
-#!/bin/bash
 
-echo '''
 #!/bin/bash
 nodeNum=5
 processListInNode=("0,1,2" "0,1,2" "2" "2" "2")
@@ -17,22 +15,15 @@ processList=(${processListInNode[$nodeIndex]})
 IFS="$OLD_IFS" 
 for processIndex in ${processList[@]}
 do 
-	processId=`ps -ef | grep ${processName[$processIndex]}| grep ${processClass[$processIndex]} | awk '\''{print $2}'\''`
+	processId=`ps -ef | grep ${processName[$processIndex]}| grep ${processClass[$processIndex]} | awk '{print $2}'`
 	if [ "$processId" =  "" ]; then
 		echo `date` == `hostname` ==
 		echo "[${processClass[$processIndex]} ${processName[$processIndex]}] is restart!"
-		echo ${processScript[$processIndex]} | awk -F "&&" '\''{for(i=1;i<=NF;i++){system($i)}}'\''
+		echo ${processScript[$processIndex]} | awk -F "&&" '{for(i=1;i<=NF;i++){system($i)}}'
 	#else
 		#echo stop ${processClass[$processIndex]} ${processName[$processIndex]}
 		#kill $processId
 		#echo "[${processClass[$processIndex]} ${processName[$processIndex]}] is alive!"
 	fi
 done
-''' > monitorCluster.sh
 
-nodeNum=5
-for i in `seq $nodeNum`
-do 
-	#scp monitorCluster.sh node$i:/root/
-	ssh node$i source /root/monitorCluster.sh
-done

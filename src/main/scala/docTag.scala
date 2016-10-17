@@ -26,16 +26,14 @@ object LDATest {
   //样例类,自动具备 apply,unapply,toString,equals,hashCode,copy 方法,可print。用普通类的主构造器也可以实现，不过字段前要加val/var，否则变量没有被使用，不会升为字段
   private case class Params(
     input: String = "hdfs:///user/root/data/ZhuJiangShuMa/ZhuJiangShuMa.csv",
-    //input: String = "file:///spark/work/data/sparkLDA/ZhuJiangShuMa/ZhuJiangShuMa.csv",
+    //input: String = "hdfs:///user/root/data/ZhuJiangShuMa/test.csv",
     k: Int = 10,                         
-    maxIterations: Int = 500,             
+    maxIterations: Int = 1000,             
     docConcentration: Double = -1,      
     topicConcentration: Double = -1,    
     vocabSize: Int = 30000,      
     algorithm: String = "em",          
-    //checkpointDir: Option[String] = Some("hdfs://node1:8020/user/root/LDACheckPointDir/"),
     checkpointDir: Option[String] = Some("hdfs://xdata/user/root/LDACheckPointDir/"),
-    //checkpointDir: Option[String] = Some("file:///spark/work/LDACheckPointDir/"),
     checkpointInterval: Int = 10 ,     
     esoutput: String = "lidj/test",
     esnodes: String = "node1",
@@ -193,7 +191,7 @@ object LDATest {
     paths: String,
     vocabSize: Int)= {
 
-          val wholeTextRDD=sc.textFile(paths)
+          val wholeTextRDD=sc.textFile(paths,80)
 
         val contentRDD=wholeTextRDD.map{_.split(",")}.filter(_.size>4).map{splited=>splited(4).trim}.zipWithIndex.map{case(line,id)=>(id,line)}
 
